@@ -1,8 +1,7 @@
 // ─────────────────────────────────────────────────────────
 // これは「業務アプリの画面」です。宣伝ページ（LP）ではありません。
 //
-// /build を実行すると、docs/03_spec.md にそって
-// この構造を保ったまま、あなたの題材のツールに作り替えられます。
+// イベント案内の管理ツール（docs/03_spec.md にそって実装）
 //
 // 画面の骨格（この形は崩さない）:
 //   左メニュー（.side）＋ 上部バー（.topbar）＋ 本体（.content）
@@ -13,59 +12,45 @@
 import { useEffect, useMemo, useState } from "react";
 
 // ═══════════════════════════════════════════════════════════
-//  画面の型 ── ここだけ選び直せば、見た目と並び方が変わります
-//  /build が docs/03_spec.md の「0. 画面の型」を見てここを設定します。
-//  ⚠ 新しいCSSは書かない。下の選択肢から選ぶこと。
+//  画面の型 ── docs/03_spec.md「0. 画面の型」のとおりに設定
+//  ⚠ 新しいCSSは書かない。用意された選択肢から選ぶだけ。
 // ═══════════════════════════════════════════════════════════
 
-/** 色み。業種の空気に合わせる
- *  "pine"   教育・サービス・その他（初期値）
- *  "indigo" 士業・不動産・BtoB
- *  "clay"   建設・工務店・現場仕事
- *  "sea"    医療・介護・公共
- *  "wine"   飲食・小売・美容
- */
-const TONE = "pine";
+/** 色み。事業会社の新事業開発部（BtoB）なので indigo */
+const TONE = "indigo";
 
-/** 密度。1日に見る件数で決める
- *  "compact" 1日20件以上（多くの行を1画面に）
- *  "normal"  ふつう（初期値）
- *  "roomy"   1日5件以下で、1件が重い（ゆったり）
- */
+/** 密度。1日10件なので normal */
 const DENSITY = "normal";
 
-/** 画面の型。3行目「何が一覧で見られると助かるか」で決める
- *  "queue" 待たせているものを、古い順に片づける（問い合わせ・依頼・返信）
- *  "stage" いくつかの段階を順に進んでいく（査定→撮影→値付け→出品）
- *  "due"   期限がある（締切・訪問予定・提出物・更新期限）
- */
-const LAYOUT: "queue" | "stage" | "due" = "queue";
+/** 画面の型。開催日という動かせない期限が判断の軸なので due */
+const LAYOUT: "queue" | "stage" | "due" = "due";
 
-/** 数え方。件 / 名 / 棟 / 台 / 点 / 本 など、その仕事の言葉で */
-const UNIT = "件";
+/** 数え方。セミナー・講演は「本」で数える */
+const UNIT = "本";
 
-/** 区分の選択肢。LAYOUT が "stage" のときは、これが「段階」になる（順番どおりに並ぶ） */
-const CATEGORIES = ["LINE", "電話", "メール", "紹介"];
+/** 区分の選択肢＝開催場所。行ける場所かどうかが判断に効く */
+const CATEGORIES = ["オンライン", "都内会場", "都外会場"];
 
 // ═══════════════════════════════════════════════════════════
 
-/** 1件のデータ。/build でこの項目名を題材に合わせて変える */
+/** イベント案内 1本ぶん。データ項目は5つ（＋状態） */
 type Record = {
   id: string;
-  name: string;      // 主たる名前（顧客名・品名など）
-  category: string;  // 区分／段階／種別
-  note: string;      // メモ
-  date: string;      // YYYY-MM-DD（queue=受けた日 / stage=受け入れた日 / due=期限）
-  done: boolean;     // 片づいたか
+  name: string;       // イベント名
+  category: string;   // 開催場所
+  fee: string;        // 参加費
+  organizer: string;  // 主催者名
+  date: string;       // 開催日（YYYY-MM-DD）
+  done: boolean;      // 申込済か
 };
 
 type View = "list" | "new" | "settings";
 type Filter = "open" | "done" | "all";
 
-const KEY = "starter-records";
-const NAME_KEY = "starter-appname";
+const KEY = "event-invite-data";
+const NAME_KEY = "event-invite-appname";
 
-/** 画面の型ごとの言葉。ここを直せば画面じゅうの文言が揃って変わる */
+/** 画面じゅうの言葉。ここを直せば文言が揃って変わる */
 const TEXT = {
   queue: {
     sub: "未対応のものが、待たせている順に並びます",
@@ -84,16 +69,16 @@ const TEXT = {
     headOpen: "進行中",
   },
   due: {
-    sub: "期限が近い順に並びます",
-    open: "未完了", done: "完了",
-    toTo: "完了にする", toBack: "未完了に戻す",
-    dateLabel: "期限", catLabel: "種別",
-    stat2: "期限切れ",
-    headOpen: "未完了（期限が近い順）",
+    sub: "開催日が近い順に並びます",
+    open: "検討中", done: "申込済",
+    toTo: "申込済にする", toBack: "検討中に戻す",
+    dateLabel: "開催日", catLabel: "開催場所",
+    stat2: "開催が過ぎた",
+    headOpen: "検討中（開催日が近い順）",
   },
 }[LAYOUT];
 
-/** n日前の日付。マイナスを渡すとn日後（"due" の見本データで使う） */
+/** n日前の日付。マイナスを渡すとn日後 */
 const ago = (n: number) => new Date(Date.now() - n * 86400000).toISOString().slice(0, 10);
 const today = () => ago(0);
 
@@ -107,24 +92,24 @@ const diff = (d: string) =>
 const waiting = (d: string) => Math.max(0, -diff(d));
 
 /**
- * 見本データ。/build でこの中身を題材に合わせて入れ替える。
- * ⚠ 実在の人名・会社名・連絡先は使わない。件数は12〜15件（少ないと画面が寂しく見える）
+ * 見本データ。実在の人名・会社名・連絡先は使わない（主催者名はすべて架空）
+ * 検討中 9本 / 申込済 5本
  */
 const SAMPLE: Record[] = [
-  { id: "s01", name: "佐藤さん（中2）", category: "LINE",   note: "数学と英語、週2希望。木曜以外",        date: ago(0),  done: false },
-  { id: "s02", name: "田村さん（小5）", category: "電話",   note: "折り返し希望 18時以降",               date: ago(1),  done: false },
-  { id: "s03", name: "鈴木さん（高1）", category: "紹介",   note: "在籍生のご家族から。物理を見てほしい",  date: ago(1),  done: false },
-  { id: "s04", name: "中村さん（中3）", category: "メール", note: "受験相談。志望校はまだ決めていない",   date: ago(2),  done: false },
-  { id: "s05", name: "渡辺さん（中2）", category: "紹介",   note: "平日夕方のみ。部活が19時まで",         date: ago(3),  done: false },
-  { id: "s06", name: "小林さん（中1）", category: "LINE",   note: "体験授業の日程を調整中",              date: ago(4),  done: false },
-  { id: "s07", name: "松本さん（小4）", category: "メール", note: "兄弟割引について聞かれている",         date: ago(5),  done: false },
-  { id: "s08", name: "山口さん（小6）", category: "電話",   note: "料金表を送ってほしいとのこと",         date: ago(6),  done: false },
-  { id: "s09", name: "吉田さん（高2）", category: "LINE",   note: "夏期講習の残席を確認したい",           date: ago(9),  done: false },
-  { id: "s10", name: "井上さん（中3）", category: "電話",   note: "面談日程を確定。来週火曜18時",         date: ago(12), done: true },
-  { id: "s11", name: "清水さん（高3）", category: "LINE",   note: "資料送付済み。返事待ち",              date: ago(14), done: true },
-  { id: "s12", name: "森さん（小3）",   category: "紹介",   note: "体験のあと入会。4月から週1",          date: ago(16), done: true },
-  { id: "s13", name: "大野さん（中1）", category: "メール", note: "他塾と比較検討中とのこと",            date: ago(18), done: true },
-  { id: "s14", name: "岡田さん（高1）", category: "LINE",   note: "今回は見送りとご連絡あり",            date: ago(21), done: true },
+  { id: "s01", name: "新規事業の立ち上げ実務セミナー",        category: "オンライン", fee: "無料",     organizer: "みらい事業創造フォーラム",   date: ago(3),   done: false },
+  { id: "s02", name: "大企業の社内起業 失敗事例に学ぶ",        category: "オンライン", fee: "3,300円",  organizer: "ビジネスデザイン協議会",     date: ago(1),   done: false },
+  { id: "s03", name: "事業共創ピッチ 秋の回",                  category: "都内会場",   fee: "5,500円",  organizer: "共創ラボ東京",               date: ago(0),   done: false },
+  { id: "s04", name: "新規事業の値決めワークショップ",         category: "都内会場",   fee: "11,000円", organizer: "事業開発カレッジ",           date: ago(-1),  done: false },
+  { id: "s05", name: "BtoB SaaS の初期顧客のつくり方",         category: "オンライン", fee: "無料",     organizer: "みらい事業創造フォーラム",   date: ago(-3),  done: false },
+  { id: "s06", name: "地域産業とのオープンイノベーション商談会", category: "都外会場",  fee: "無料",     organizer: "北陸ものづくり交流会",       date: ago(-5),  done: false },
+  { id: "s07", name: "新規事業担当者の夜会（第12回）",         category: "都内会場",   fee: "2,000円",  organizer: "事業開発ナイト運営委員会",   date: ago(-7),  done: false },
+  { id: "s08", name: "生成AI活用の社内実装 事例報告会",        category: "オンライン", fee: "無料",     organizer: "デジタル推進研究フォーラム", date: ago(-12), done: false },
+  { id: "s09", name: "新規事業 撤退基準のつくり方",            category: "オンライン", fee: "4,400円",  organizer: "ビジネスデザイン協議会",     date: ago(-18), done: false },
+  { id: "s10", name: "顧客インタビュー実践講座",               category: "都内会場",   fee: "8,800円",  organizer: "事業開発カレッジ",           date: ago(-2),  done: true  },
+  { id: "s11", name: "大手×スタートアップ 提携実務セミナー",   category: "都内会場",   fee: "無料",     organizer: "共創ラボ東京",               date: ago(-6),  done: true  },
+  { id: "s12", name: "新規事業の予算取り 社内説得の型",        category: "オンライン", fee: "6,600円",  organizer: "事業開発カレッジ",           date: ago(-9),  done: true  },
+  { id: "s13", name: "関西 事業創造カンファレンス",            category: "都外会場",   fee: "15,000円", organizer: "関西イノベーション協議会",   date: ago(-14), done: true  },
+  { id: "s14", name: "新規事業部門の組織づくり座談会",         category: "オンライン", fee: "無料",     organizer: "みらい事業創造フォーラム",   date: ago(-21), done: true  },
 ];
 
 /** 一覧をどう束ねるか。LAYOUT ごとに変わる */
@@ -134,7 +119,6 @@ function grouped(list: Record[], filter: Filter): Group[] {
   const head = filter === "open" ? TEXT.headOpen : filter === "done" ? TEXT.done : "すべて";
 
   if (LAYOUT === "stage" && filter === "open") {
-    // 段階ごとに束ねる。CATEGORIES の順に並べ、中身が無い段階は出さない
     return CATEGORIES.map((c) => ({
       key: c,
       label: c,
@@ -145,7 +129,7 @@ function grouped(list: Record[], filter: Filter): Group[] {
 
   if (LAYOUT === "due" && filter === "open") {
     const buckets: Group[] = [
-      { key: "late",  label: "期限が過ぎている", mark: "late", items: [] },
+      { key: "late",  label: "開催が過ぎている", mark: "late", items: [] },
       { key: "now",   label: "今日・明日",       mark: "now",  items: [] },
       { key: "week",  label: "今週のうち",                     items: [] },
       { key: "later", label: "それ以降",                       items: [] },
@@ -163,13 +147,15 @@ function grouped(list: Record[], filter: Filter): Group[] {
   return [{ key: "all", label: head, items: list }];
 }
 
-/** 行の右に出す小さなバッジ。LAYOUT ごとに意味が変わる */
-function rowBadge(r: Record): { text: string; kind: "warn" | "danger" } | null {
+/** 行の右に出す小さなバッジ。開催日までの残りを見せる */
+function rowBadge(r: Record): { text: string; kind: "" | "warn" | "danger" } | null {
   if (r.done) return null;
   if (LAYOUT === "due") {
     const d = diff(r.date);
-    if (d < 0) return { text: `${-d}日 超過`, kind: "danger" };
+    if (d < 0) return { text: `${-d}日前に終了`, kind: "danger" };
     if (d === 0) return { text: "今日", kind: "warn" };
+    if (d === 1) return { text: "明日", kind: "warn" };
+    if (d <= 7) return { text: `あと${d}日`, kind: "" };
     return null;
   }
   const w = waiting(r.date);
@@ -179,7 +165,7 @@ function rowBadge(r: Record): { text: string; kind: "warn" | "danger" } | null {
 
 export default function Home() {
   const [items, setItems] = useState<Record[]>([]);
-  const [appName, setAppName] = useState("お問い合わせ管理");
+  const [appName, setAppName] = useState("イベント案内の管理");
   const [loaded, setLoaded] = useState(false);
 
   const [view, setView] = useState<View>("list");
@@ -187,7 +173,9 @@ export default function Home() {
   const [q, setQ] = useState("");
   const [editing, setEditing] = useState<Record | null>(null);
 
-  const [form, setForm] = useState({ name: "", category: CATEGORIES[0], note: "", date: today() });
+  const [form, setForm] = useState({
+    name: "", category: CATEGORIES[0], fee: "", organizer: "", date: today(),
+  });
 
   useEffect(() => {
     try {
@@ -207,7 +195,7 @@ export default function Home() {
     localStorage.setItem(NAME_KEY, appName);
   }, [items, appName, loaded]);
 
-  // 見本データのまま触っていない状態か（1件でも足す・消すと false になる）
+  // 見本データのまま触っていない状態か（1本でも足す・消すと false になる）
   const isSample = items.length === SAMPLE.length && items.every((i) => i.id.startsWith("s"));
 
   const counts = useMemo(
@@ -219,7 +207,7 @@ export default function Home() {
     [items]
   );
 
-  /** 2つ目の統計。LAYOUT で意味が変わる */
+  /** 2つ目の統計。検討中のまま開催日が過ぎたもの */
   const attention = useMemo(() => {
     const open = items.filter((i) => !i.done);
     if (LAYOUT === "due") return open.filter((i) => diff(i.date) < 0).length;
@@ -231,14 +219,14 @@ export default function Home() {
     const k = q.trim().toLowerCase();
     return items
       .filter((i) => (filter === "all" ? true : filter === "open" ? !i.done : i.done))
-      .filter((i) => !k || (i.name + i.note + i.category).toLowerCase().includes(k))
+      .filter((i) => !k || (i.name + i.organizer + i.category + i.fee).toLowerCase().includes(k))
       .sort((a, b) => a.date.localeCompare(b.date));
   }, [items, filter, q]);
 
   const groups = useMemo(() => grouped(shown, filter), [shown, filter]);
 
   function resetForm() {
-    setForm({ name: "", category: CATEGORIES[0], note: "", date: today() });
+    setForm({ name: "", category: CATEGORIES[0], fee: "", organizer: "", date: today() });
     setEditing(null);
   }
 
@@ -256,7 +244,7 @@ export default function Home() {
 
   function startEdit(r: Record) {
     setEditing(r);
-    setForm({ name: r.name, category: r.category, note: r.note, date: r.date });
+    setForm({ name: r.name, category: r.category, fee: r.fee, organizer: r.organizer, date: r.date });
     setView("new");
   }
 
@@ -271,7 +259,7 @@ export default function Home() {
 
   const titles: { [K in View]: [string, string] } = {
     list: ["一覧", TEXT.sub],
-    new: [editing ? "編集" : "新規登録", "入力して保存すると、一覧に追加されます"],
+    new: [editing ? "編集" : "新規登録", "入力して保存すると、開催日の位置に並びます"],
     settings: ["設定", "表示名の変更と、データの初期化"],
   };
 
@@ -297,7 +285,7 @@ export default function Home() {
             </button>
           ))}
         </div>
-        <div className="side-foot">/build で、あなたの題材に作り替わります</div>
+        <div className="side-foot">届いた案内は、読んだその場で登録します</div>
       </nav>
 
       {/* ───────── 本体 ───────── */}
@@ -326,13 +314,13 @@ export default function Home() {
               <div className="stats">
                 <div className="stat"><div className="n accent">{counts.open}</div><div className="l">{TEXT.open}</div></div>
                 <div className="stat"><div className="n">{attention}</div><div className="l">{TEXT.stat2}</div></div>
-                <div className="stat"><div className="n">{counts.all}</div><div className="l">全{UNIT}</div></div>
+                <div className="stat"><div className="n">{counts.all}</div><div className="l">全{UNIT}数</div></div>
               </div>
 
               <div className="filters">
                 <div className="search">
                   <input className="field" value={q} onChange={(e) => setQ(e.target.value)}
-                    placeholder="名前・メモで検索" />
+                    placeholder="イベント名・主催者名で検索" />
                 </div>
                 <div className="seg">
                   {(["open", "done", "all"] as Filter[]).map((f) => (
@@ -353,9 +341,10 @@ export default function Home() {
                       <span className="count">0 {UNIT}</span>
                     </div>
                     <div className="empty">
-                      <div className="t">{q ? "見つかりませんでした" : "ここに表示するものがありません"}</div>
+                      <div className="t">{q ? "見つかりませんでした" : "登録した案内がまだありません"}</div>
                       <div className="d">
-                        {q ? "検索の言葉を変えてみてください。" : "右上の「新規登録」から追加できます。"}
+                        {q ? "イベント名か主催者名の一部で探し直してみてください。"
+                           : "届いた案内メールを見ながら、右上の「新規登録」から1本ずつ追加できます。"}
                       </div>
                     </div>
                   </>
@@ -373,13 +362,15 @@ export default function Home() {
                           <div className="row" key={r.id}>
                             <div className="row-main">
                               <div className="row-title">{r.name}</div>
-                              {r.note && <div className="row-sub">{r.note}</div>}
+                              {(r.organizer || r.fee) && (
+                                <div className="row-sub">
+                                  {[r.organizer, r.fee].filter(Boolean).join(" ・ ")}
+                                </div>
+                              )}
                             </div>
                             <div className="row-meta">
-                              {b && <span className={`badge badge-${b.kind}`}>{b.text}</span>}
-                              {!(LAYOUT === "stage" && filter === "open") && (
-                                <span className="badge">{r.category}</span>
-                              )}
+                              {b && <span className={b.kind ? `badge badge-${b.kind}` : "badge"}>{b.text}</span>}
+                              <span className="badge">{r.category}</span>
                               <span className="row-time">{r.date.slice(5).replace("-", "/")}</span>
                               <button className="btn-ghost" onClick={() => startEdit(r)}>編集</button>
                               <button className="btn-ghost" onClick={() => toggle(r.id)}>
@@ -402,12 +393,12 @@ export default function Home() {
           {view === "new" && (
             <div className="panel">
               <div className="form-row">
-                <label className="label" htmlFor="f-name">名前<span className="req">必須</span></label>
+                <label className="label" htmlFor="f-name">イベント名<span className="req">必須</span></label>
                 <input id="f-name" className="field" value={form.name}
                   onChange={(e) => setForm({ ...form, name: e.target.value })}
                   onKeyDown={(e) => { if (e.key === "Enter") save(); }}
-                  placeholder="例：Aさん（中2）" />
-                <span className="hint">あとで見て誰か分かる書き方にします</span>
+                  placeholder="例：新規事業の立ち上げ実務セミナー" />
+                <span className="hint">案内メールの件名をそのまま貼っても構いません</span>
               </div>
 
               <div className="form-row">
@@ -428,10 +419,21 @@ export default function Home() {
               </div>
 
               <div className="form-row">
-                <label className="label" htmlFor="f-note">メモ</label>
-                <textarea id="f-note" className="field" value={form.note}
-                  onChange={(e) => setForm({ ...form, note: e.target.value })}
-                  placeholder="希望曜日・科目・折り返し時間など" />
+                <div className="inline">
+                  <div>
+                    <label className="label" htmlFor="f-fee">参加費</label>
+                    <input id="f-fee" className="field" value={form.fee}
+                      onChange={(e) => setForm({ ...form, fee: e.target.value })}
+                      placeholder="例：無料 / 5,500円" />
+                  </div>
+                  <div>
+                    <label className="label" htmlFor="f-org">主催者名</label>
+                    <input id="f-org" className="field" value={form.organizer}
+                      onChange={(e) => setForm({ ...form, organizer: e.target.value })}
+                      placeholder="例：みらい事業創造フォーラム" />
+                  </div>
+                </div>
+                <span className="hint">分からなければ空のままで登録できます</span>
               </div>
 
               <div className="form-actions">
